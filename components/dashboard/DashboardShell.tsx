@@ -13,6 +13,7 @@ import {
   Menu,
   LogOut,
   ChevronDown,
+  Bot,
 } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -35,6 +36,7 @@ interface DashboardShellProps {
 const navItems = [
   { href: '/dashboard', label: 'Fleet Overview', icon: LayoutGrid },
   { href: '/dashboard/devices', label: 'Devices', icon: Cpu },
+  { href: '/dashboard/receptionist', label: 'AI Receptionist', icon: Bot },
   { href: '/dashboard/inquiries', label: 'Inquiries', icon: MessageSquare, adminOnly: true },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings },
 ]
