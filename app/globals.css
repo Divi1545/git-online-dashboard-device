@@ -35,3 +35,21 @@
     @apply bg-[#0A0A0A] text-white font-barlow;
   }
 }
+
+@keyframes led-breathe {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px var(--led-color); }
+  50% { opacity: 0.4; box-shadow: 0 0 2px 0px var(--led-color); }
+}
+
+@keyframes led-rapid-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+.led-breathe {
+  animation: led-breathe 2.5s ease-in-out infinite;
+}
+
+.led-rapid-pulse {
+  animation: led-rapid-pulse 0.5s ease-in-out infinite;
+}

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase/client'
 import { DeviceCard } from '@/components/hardware/DeviceCard'
 import { Server, Wifi, AlertCircle, DollarSign } from 'lucide-react'
@@ -35,9 +35,26 @@ interface FleetOverviewProps {
   userId: string
 }
 
-export function FleetOverview({ initialDevices, stats, isAdmin }: FleetOverviewProps) {
+export function FleetOverview({ initialDevices, isAdmin }: FleetOverviewProps) {
   const [devices, setDevices] = useState<Device[]>(initialDevices)
   const supabase = createBrowserClient()
+
+  // Recalculate stats live from devices state so they update with Realtime
+  const stats = useMemo<Stats | null>(() => {
+    if (!isAdmin) return null
+    const revenue = devices.reduce((sum, d) => {
+      const sub = Array.isArray(d.hardware_subscriptions)
+        ? d.hardware_subscriptions[0]
+        : d.hardware_subscriptions
+      return sub?.status === 'active' ? sum + (sub.price_usd || 0) : sum
+    }, 0)
+    return {
+      total: devices.length,
+      online: devices.filter((d) => d.status === 'online').length,
+      lapsed: devices.filter((d) => d.status === 'lapsed').length,
+      revenue,
+    }
+  }, [devices, isAdmin])
 
   useEffect(() => {
     const channel = supabase
