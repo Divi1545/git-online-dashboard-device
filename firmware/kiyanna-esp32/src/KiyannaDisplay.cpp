@@ -1,7 +1,7 @@
 #include "KiyannaDisplay.h"
 
 KiyannaDisplay::KiyannaDisplay()
-  : _tft(Adafruit_ST7789(LCD_CS, LCD_DC, LCD_MOSI, LCD_SCLK, LCD_RST)),
+  : _tft(LCD_CS, LCD_DC, LCD_RST),  // hardware SPI constructor
     _state(DISP_BOOT), _lastUpdate(0), _animStep(0) {}
 
 void KiyannaDisplay::begin() {
@@ -10,8 +10,10 @@ void KiyannaDisplay::begin() {
     pinMode(LCD_BL, OUTPUT);
     digitalWrite(LCD_BL, HIGH);
   }
-  // Adafruit ST7789 — no separate SPI.begin() needed
-  _tft.init(240, 240, SPI_MODE2);
+  // Hardware SPI — explicitly map pins for ESP32-S3 FSPI bus
+  SPI.begin(LCD_SCLK, -1, LCD_MOSI, LCD_CS);
+  // ST7789 uses SPI Mode 0 (CPOL=0 CPHA=0) — do NOT pass SPI_MODE2
+  _tft.init(240, 240);
   _tft.setRotation(2);
   _tft.fillScreen(COLOR_BG);
   Serial.println("[DISP] ST7789 ready");
