@@ -29,7 +29,7 @@ public:
 
 private:
   bool _recording;
-  uint8_t* _audioBuffer;
+  uint8_t* _audioBuffer = nullptr;
   size_t _bufferFilled;
 
   void setupMicI2S();

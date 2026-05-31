@@ -1,6 +1,6 @@
 .pio/build/kiyanna-esp32s3/FrameworkArduino/esp32-hal-tinyusb.c.o: \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-tinyusb.c \
- /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_qspi/include/sdkconfig.h \
+ /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/log/include/esp_log.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_rom/include/esp_rom_sys.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/esp32s3/include/soc/reset_reasons.h \

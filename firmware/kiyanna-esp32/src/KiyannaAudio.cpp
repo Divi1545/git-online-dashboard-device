@@ -3,13 +3,7 @@
 // Simple Base64 lookup
 static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-KiyannaAudio::KiyannaAudio() : _recording(false), _bufferFilled(0) {
-  _audioBuffer = (uint8_t*)ps_malloc(AUDIO_BUFFER_SIZE + 44);  // +44 for WAV header
-  if (!_audioBuffer) {
-    Serial.println("[AUDIO] PSRAM allocation failed! Using DRAM.");
-    _audioBuffer = (uint8_t*)malloc(16000);  // fallback 1s
-  }
-}
+KiyannaAudio::KiyannaAudio() : _recording(false), _bufferFilled(0), _audioBuffer(nullptr) {}
 
 void KiyannaAudio::setupMicI2S() {
   i2s_config_t cfg = {
@@ -61,6 +55,18 @@ void KiyannaAudio::setupSpeakerI2S() {
 
 void KiyannaAudio::beginMic() {
   setupMicI2S();
+  // Allocate here — after psramInit() has run, not in global constructor
+  size_t bufSize = AUDIO_BUFFER_SIZE + 44;
+  _audioBuffer = (uint8_t*)ps_malloc(bufSize);
+  if (!_audioBuffer) {
+    Serial.println("[AUDIO] PSRAM alloc failed — falling back to DRAM");
+    _audioBuffer = (uint8_t*)malloc(bufSize);  // same full size in DRAM
+  }
+  if (_audioBuffer) {
+    Serial.printf("[AUDIO] Buffer: %u bytes @ 0x%08x\n", (unsigned)bufSize, (unsigned)_audioBuffer);
+  } else {
+    Serial.println("[AUDIO] FATAL: audio buffer alloc failed");
+  }
   Serial.println("[AUDIO] Mic I2S ready");
 }
 
@@ -79,13 +85,13 @@ String KiyannaAudio::recordToBase64(int maxMs) {
 
   unsigned long startTime = millis();
   unsigned long lastSound = millis();
-  int16_t readBuf[512];
+  static DRAM_ATTR int16_t readBuf[256];  // DRAM_ATTR: DMA cannot access PSRAM
   size_t bytesRead = 0;
 
   Serial.println("[AUDIO] Recording...");
 
   while (millis() - startTime < (unsigned long)maxMs) {
-    i2s_read(I2S_MIC_PORT, readBuf, sizeof(readBuf), &bytesRead, portMAX_DELAY);
+    i2s_read(I2S_MIC_PORT, readBuf, sizeof(readBuf), &bytesRead, pdMS_TO_TICKS(100));
 
     if (bytesRead > 0 && totalRead + bytesRead <= maxDataSize) {
       memcpy(dataBuf + totalRead, readBuf, bytesRead);

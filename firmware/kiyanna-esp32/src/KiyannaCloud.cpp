@@ -17,20 +17,25 @@ ChatResult KiyannaCloud::chat(const String& token, const String& audioBase64, co
   http.addHeader("Authorization", "Bearer " + token);
   http.setTimeout(30000);  // 30s for Claude response
 
-  JsonDocument doc;
-  doc["device_id"] = DEVICE_ID;
-  doc["audio_base64"] = audioBase64;
-  doc["language"] = language;
-
-  String body;
-  serializeJson(doc, body);
+  // Build JSON in PSRAM — audioBase64 can be 80KB+ which exhausts DRAM String heap
+  size_t jsonSize = audioBase64.length() + 128;
+  char* jsonBuf = (char*)ps_malloc(jsonSize);
+  if (!jsonBuf) jsonBuf = (char*)malloc(jsonSize);
+  if (!jsonBuf) {
+    result.error = "JSON alloc failed";
+    return result;
+  }
+  snprintf(jsonBuf, jsonSize,
+    "{\"device_id\":\"%s\",\"audio_base64\":\"%s\",\"language\":\"%s\"}",
+    DEVICE_ID, audioBase64.c_str(), language.c_str());
 
   if (DEBUG_MODE) {
     Serial.println("[CHAT] POST " + url);
     Serial.println("[CHAT] Audio size: " + String(audioBase64.length()) + " chars");
   }
 
-  int httpCode = http.POST(body);
+  int httpCode = http.POST((uint8_t*)jsonBuf, strlen(jsonBuf));
+  free(jsonBuf);
   String payload = http.getString();
   http.end();
 

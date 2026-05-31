@@ -267,12 +267,22 @@ void loop() {
 
   switch (appState) {
     case STATE_IDLE: {
-      // Check for wake trigger (button press in v1)
-      if (digitalRead(BOOT_BTN) == LOW) {
-        delay(50);  // debounce
-        if (digitalRead(BOOT_BTN) == LOW) {
-          Serial.println("[WAKE] Button pressed!");
-          handleConversation();
+      // Always-on VAD — trigger conversation when sustained speech detected
+      // DRAM_ATTR required: I2S DMA cannot write to PSRAM
+      static DRAM_ATTR int16_t vadBuf[256];
+      static int speechChunks = 0;
+      size_t vadRead = 0;
+      i2s_read(I2S_MIC_PORT, vadBuf, sizeof(vadBuf), &vadRead, pdMS_TO_TICKS(50));
+      if (vadRead > 0) {
+        if (!audio.isSilent(vadBuf, vadRead / 2, 800)) {
+          speechChunks++;
+          if (speechChunks >= 6) {  // ~300ms sustained speech → trigger
+            speechChunks = 0;
+            Serial.println("[WAKE] Voice detected!");
+            handleConversation();
+          }
+        } else {
+          if (speechChunks > 0) speechChunks--;
         }
       }
 

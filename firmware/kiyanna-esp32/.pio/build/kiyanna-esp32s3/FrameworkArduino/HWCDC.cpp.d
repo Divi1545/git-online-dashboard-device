@@ -1,7 +1,7 @@
 .pio/build/kiyanna-esp32s3/FrameworkArduino/HWCDC.cpp.o: \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/cores/esp32/HWCDC.cpp \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/cores/esp32/USB.h \
- /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_qspi/include/sdkconfig.h \
+ /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_event/include/esp_event.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_err.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_compiler.h \

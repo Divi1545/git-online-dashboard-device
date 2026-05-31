@@ -1,7 +1,7 @@
 .pio/build/kiyanna-esp32s3/FrameworkArduino/esp32-hal-spi.c.o: \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-spi.c \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-spi.h \
- /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_qspi/include/sdkconfig.h \
+ /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_system/include/esp_system.h \
  /Users/divinduedirisinghe/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_common/include/esp_err.h \
