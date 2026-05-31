@@ -57,11 +57,10 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // 3. Transcribe audio with Groq Whisper (fast, free, not OpenAI)
-  //    Groq API key: https://console.groq.com/keys (free account)
-  const groqKey = process.env.GROQ_API_KEY
-  if (!groqKey) {
-    console.error('[chat] GROQ_API_KEY not set — add it to Vercel env vars')
+  // 3. Transcribe audio with OpenAI Whisper (key already set in Vercel as OPENAI_API_KEY)
+  const openaiKey = process.env.OPENAI_API_KEY
+  if (!openaiKey) {
+    console.error('[chat] OPENAI_API_KEY not set')
     return NextResponse.json(
       { error: 'STT service not configured', code: 'CONFIG_ERROR' },
       { status: 500, headers: CORS_HEADERS }
@@ -74,22 +73,23 @@ export async function POST(req: NextRequest) {
   try {
     const formData = new FormData()
     formData.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav')
-    formData.append('model', 'whisper-large-v3-turbo')  // fastest Groq Whisper model
+    formData.append('model', 'whisper-1')
     if (body.language && body.language !== 'auto' && body.language !== 'en') {
       formData.append('language', body.language)
     }
 
-    const whisperRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${groqKey}` },
+      headers: { Authorization: `Bearer ${openaiKey}` },
       body: formData,
     })
 
     if (!whisperRes.ok) {
       const errText = await whisperRes.text()
-      console.error('[chat] Groq Whisper error:', whisperRes.status, errText)
+      // Log status + first 200 chars of error so Vercel doesn't truncate it
+      console.error(`[chat] Whisper ${whisperRes.status}: ${errText.slice(0, 200)}`)
       return NextResponse.json(
-        { error: 'Transcription failed', code: 'STT_ERROR' },
+        { error: 'Transcription failed', code: 'STT_ERROR', status: whisperRes.status },
         { status: 500, headers: CORS_HEADERS }
       )
     }
@@ -97,7 +97,7 @@ export async function POST(req: NextRequest) {
     const whisperData = await whisperRes.json()
     transcript = (whisperData.text ?? '').trim()
   } catch (err) {
-    console.error('[chat] Groq Whisper exception:', err)
+    console.error('[chat] Whisper exception:', err)
     return NextResponse.json(
       { error: 'Transcription service error', code: 'STT_ERROR' },
       { status: 500, headers: CORS_HEADERS }
