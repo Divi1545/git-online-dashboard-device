@@ -1,4 +1,5 @@
 export const runtime = 'nodejs'
+export const maxDuration = 60  // audio transcription + Claude response
 
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
@@ -56,47 +57,56 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // 3. Transcribe audio with OpenAI Whisper (STT only — AI is Claude)
+  // 3. Transcribe audio with Groq Whisper (fast, free, not OpenAI)
+  //    Groq API key: https://console.groq.com/keys (free account)
+  const groqKey = process.env.GROQ_API_KEY
+  if (!groqKey) {
+    console.error('[chat] GROQ_API_KEY not set — add it to Vercel env vars')
+    return NextResponse.json(
+      { error: 'STT service not configured', code: 'CONFIG_ERROR' },
+      { status: 500, headers: CORS_HEADERS }
+    )
+  }
+
   const audioBuffer = Buffer.from(body.audio_base64, 'base64')
   let transcript = ''
 
   try {
     const formData = new FormData()
     formData.append('file', new Blob([audioBuffer], { type: 'audio/wav' }), 'audio.wav')
-    formData.append('model', 'whisper-1')
+    formData.append('model', 'whisper-large-v3-turbo')  // fastest Groq Whisper model
     if (body.language && body.language !== 'auto' && body.language !== 'en') {
       formData.append('language', body.language)
     }
 
-    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    const whisperRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      headers: { Authorization: `Bearer ${groqKey}` },
       body: formData,
     })
 
     if (!whisperRes.ok) {
       const errText = await whisperRes.text()
-      console.error('[chat] Whisper error:', whisperRes.status, errText)
+      console.error('[chat] Groq Whisper error:', whisperRes.status, errText)
       return NextResponse.json(
         { error: 'Transcription failed', code: 'STT_ERROR' },
-        { status: 502, headers: CORS_HEADERS }
+        { status: 500, headers: CORS_HEADERS }
       )
     }
 
     const whisperData = await whisperRes.json()
     transcript = (whisperData.text ?? '').trim()
   } catch (err) {
-    console.error('[chat] Whisper exception:', err)
+    console.error('[chat] Groq Whisper exception:', err)
     return NextResponse.json(
       { error: 'Transcription service error', code: 'STT_ERROR' },
-      { status: 502, headers: CORS_HEADERS }
+      { status: 500, headers: CORS_HEADERS }
     )
   }
 
-  // If no speech detected, return a prompt
   if (!transcript) {
     return NextResponse.json(
-      { text: "I didn't catch that. Could you please repeat?", language: body.language ?? 'en' },
+      { text: "I didn't catch that. Could you please speak again?", language: body.language ?? 'en' },
       { status: 200, headers: CORS_HEADERS }
     )
   }
@@ -107,13 +117,13 @@ export async function POST(req: NextRequest) {
   const db = getAdminClient()
   const { data: device } = (await db
     .from('hardware_devices')
-    .select('location, product_type')
+    .select('id, location, product_type')
     .eq('device_id', devicePayload.device_id)
-    .single()) as SupabaseSingle<Pick<DeviceRow, 'location' | 'product_type'>>
+    .single()) as SupabaseSingle<Pick<DeviceRow, 'id' | 'location' | 'product_type'>>
 
   const deviceName = device?.location ?? devicePayload.device_id
   const langNote =
-    body.language && body.language !== 'en'
+    body.language && body.language !== 'auto' && body.language !== 'en'
       ? `The user may speak ${body.language} — reply in the same language they use.`
       : 'Reply in the same language the user speaks.'
 
@@ -124,11 +134,11 @@ Do not use markdown, bullet points, or any formatting — plain conversational t
 ${langNote}
 Plan: ${devicePayload.plan}. Be professional and helpful.`
 
-  // 5. Call Claude haiku for the AI response
+  // 5. Call Claude Haiku for the AI response
   let reply = ''
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 300,
       system: systemPrompt,
       messages: [{ role: 'user', content: transcript }],
@@ -139,25 +149,34 @@ Plan: ${devicePayload.plan}. Be professional and helpful.`
     console.error('[chat] Claude error:', err)
     return NextResponse.json(
       { error: 'AI service error', code: 'CLAUDE_ERROR' },
-      { status: 502, headers: CORS_HEADERS }
+      { status: 500, headers: CORS_HEADERS }
     )
   }
 
-  // 6. Log conversation to Supabase (best-effort, non-blocking)
-  try {
-    const sessionId = `${devicePayload.device_id}-${Date.now()}`
-    await mutate('hardware_conversations').insert({
-      device_id: devicePayload.device_id,
-      session_id: sessionId,
-      language: body.language ?? 'en',
-      duration_s: 0,
-      message_count: 1,
-    })
-  } catch (err) {
-    console.error('[chat] Conversation log error:', err)
+  if (!reply) {
+    return NextResponse.json(
+      { text: "I didn't catch that. Could you please repeat?", language: body.language ?? 'en' },
+      { status: 200, headers: CORS_HEADERS }
+    )
   }
 
-  // Build TTS URL — device downloads and plays this via I2S speaker
+  // 6. Log conversation (best-effort, non-blocking) — use UUID from device lookup
+  if (device?.id) {
+    try {
+      const sessionId = `${devicePayload.device_id}-${Date.now()}`
+      await mutate('hardware_conversations').insert({
+        device_id: device.id,
+        session_id: sessionId,
+        language: body.language ?? 'en',
+        duration_s: 0,
+        message_count: 1,
+      })
+    } catch (err) {
+      console.error('[chat] Conversation log error:', err)
+    }
+  }
+
+  // 7. Build TTS URL — device downloads and plays this via I2S speaker
   const baseUrl = `https://${req.headers.get('host')}`
   const audioUrl = `${baseUrl}/api/device/tts?text=${encodeURIComponent(reply)}`
 
