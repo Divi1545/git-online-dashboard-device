@@ -1,4 +1,5 @@
 import { createServerClient as createSupabaseServerClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js'
 import { cookies } from 'next/headers'
 import { Database } from '@/types/database'
 
@@ -30,23 +31,12 @@ export function createServerClient() {
 }
 
 export function createServiceRoleClient() {
-  const cookieStore = cookies()
-  return createSupabaseServerClient<Database>(
+  // Must use plain supabase-js — @supabase/ssr is cookie/session-based and
+  // conflicts with service role auth, causing RLS bypass to fail silently.
+  return createClient<Database>(
     supabaseUrl,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll()
-        },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            )
-          } catch {}
-        },
-      },
       auth: {
         autoRefreshToken: false,
         persistSession: false,

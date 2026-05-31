@@ -7,7 +7,7 @@
 
 // RGB565 colors
 #define COLOR_BG      0x0000  // black
-#define COLOR_TEAL    0x0929  // #0D9488
+#define COLOR_TEAL    0x0CB0  // #0D9488 — correct RGB565 for teal accent
 #define COLOR_WHITE   0xFFFF
 #define COLOR_GRAY    0x7BEF
 #define COLOR_DGRAY   0x4A49

@@ -5,16 +5,31 @@ KiyannaDisplay::KiyannaDisplay()
     _state(DISP_BOOT), _lastUpdate(0), _animStep(0) {}
 
 void KiyannaDisplay::begin() {
-  // Backlight on
-  if (LCD_BL >= 0) {
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH);
+  // Hard reset the display before SPI init
+  if (LCD_RST >= 0) {
+    pinMode(LCD_RST, OUTPUT);
+    digitalWrite(LCD_RST, HIGH);
+    delay(10);
+    digitalWrite(LCD_RST, LOW);
+    delay(20);
+    digitalWrite(LCD_RST, HIGH);
+    delay(150);
   }
+
+  // Backlight — use PWM (full brightness) so the LED driver powers on correctly
+  if (LCD_BL >= 0) {
+    ledcSetup(0, 5000, 8);       // channel 0, 5kHz, 8-bit
+    ledcAttachPin(LCD_BL, 0);
+    ledcWrite(0, 255);           // full brightness
+  }
+
   // Hardware SPI — explicitly map pins for ESP32-S3 FSPI bus
   SPI.begin(LCD_SCLK, -1, LCD_MOSI, LCD_CS);
-  // ST7789 uses SPI Mode 0 (CPOL=0 CPHA=0) — do NOT pass SPI_MODE2
+  delay(10);
+
   _tft.init(240, 240);
   _tft.setRotation(2);
+  _tft.invertDisplay(true);   // ST7789 240x240 modules often need inversion
   _tft.fillScreen(COLOR_BG);
   Serial.println("[DISP] ST7789 ready");
 }
