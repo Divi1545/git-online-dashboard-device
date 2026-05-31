@@ -1,22 +1,27 @@
 #include "KiyannaDisplay.h"
 
 KiyannaDisplay::KiyannaDisplay()
-  : _tft(LCD_CS, LCD_DC, LCD_RST),  // hardware SPI constructor
+  : _tft(LCD_CS, LCD_DC, LCD_RST),
     _state(DISP_BOOT), _lastUpdate(0), _animStep(0) {}
 
 void KiyannaDisplay::begin() {
-  // Backlight on — simple GPIO, avoid LEDC channel conflicts
-  if (LCD_BL >= 0) {
-    pinMode(LCD_BL, OUTPUT);
-    digitalWrite(LCD_BL, HIGH);
-  }
+  // Backlight: active-LOW on GPIO42 — LOW = on.
+  // Using simple GPIO to avoid LEDC API version differences across Arduino-ESP32 releases.
+  pinMode(LCD_BL, OUTPUT);
+  digitalWrite(LCD_BL, LOW);
 
   // Hardware SPI — explicitly map pins for ESP32-S3 FSPI bus
   SPI.begin(LCD_SCLK, -1, LCD_MOSI, LCD_CS);
 
   _tft.init(240, 240);
   _tft.setRotation(2);
-  _tft.invertDisplay(true);   // most 240x240 ST7789 modules need inversion
+  _tft.invertDisplay(true);
+
+  // VCOM calibration for this board (from Xiaozhi sp-esp32-s3-1.54-muma reference).
+  // Without it: washed-out whites, weak blacks.
+  uint8_t vcom = 0x38;
+  _tft.sendCommand(0xBB, &vcom, 1);
+
   _tft.fillScreen(COLOR_BG);
   Serial.println("[DISP] ST7789 ready");
 }
@@ -56,23 +61,33 @@ void KiyannaDisplay::showIdle(const char* deviceId) {
   header();
   _tft.setTextColor(COLOR_GRAY);
   _tft.setTextSize(1);
-  _tft.setCursor(45, 105);
-  _tft.print("Press to speak");
+  _tft.setCursor(30, 105);
+  _tft.print("Speak or tap screen");
   // Status dot
-  _tft.fillCircle(120, 155, 10, COLOR_TEAL);
+  _tft.fillCircle(120, 148, 10, COLOR_TEAL);
+  // Mic level bar background
+  _tft.fillRect(10, 195, 220, 8, 0x2104);  // dark gray bar bg
   // Device ID footer
   _tft.setTextColor(COLOR_DGRAY);
   _tft.setCursor(10, 225);
   _tft.print(deviceId);
 }
 
+void KiyannaDisplay::updateMicLevel(int peak, int threshold) {
+  if (_state != DISP_IDLE) return;
+  // Scale peak (0-32767) to bar width (0-220px)
+  int barW = min(220, peak / 20);
+  uint16_t barColor = (peak >= threshold) ? COLOR_GREEN : COLOR_TEAL;
+  _tft.fillRect(10, 195, 220, 8, 0x2104);   // clear bar area
+  if (barW > 0) _tft.fillRect(10, 195, barW, 8, barColor);
+}
+
 void KiyannaDisplay::showListening() {
   _state = DISP_LISTENING;
   clear();
   header("Listening...", COLOR_TEAL);
-  // Mic ring
-  _tft.drawCircle(120, 155, 25, COLOR_WHITE);
-  _tft.fillCircle(120, 155, 10, COLOR_WHITE);
+  _tft.drawCircle(120, 148, 28, COLOR_WHITE);
+  _tft.fillCircle(120, 148, 12, COLOR_WHITE);
 }
 
 void KiyannaDisplay::showProcessing() {
@@ -90,7 +105,6 @@ void KiyannaDisplay::showSpeaking(const char* text) {
   _state = DISP_SPEAKING;
   clear();
   header("Kiyanna AI", COLOR_GREEN);
-  // Response text — word wrap
   _tft.setTextColor(COLOR_WHITE);
   _tft.setTextSize(1);
   _tft.setTextWrap(true);
@@ -98,7 +112,6 @@ void KiyannaDisplay::showSpeaking(const char* text) {
   String t = String(text);
   if (t.length() > 200) t = t.substring(0, 197) + "...";
   _tft.print(t);
-  // Speaking bar
   _tft.fillRect(0, 220, 240, 20, COLOR_TEAL);
   _tft.setTextColor(COLOR_BG);
   _tft.setCursor(80, 225);

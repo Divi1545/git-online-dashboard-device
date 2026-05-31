@@ -15,33 +15,52 @@
 #define HB_ENDPOINT     "/api/device/heartbeat"
 #define CONV_ENDPOINT   "/api/device/conversation"
 
-// ─── Pin Config ─────────────────────────────────────────────────────────────
-// LCD ST7789
-#define LCD_CS    10
-#define LCD_DC     9
-#define LCD_RST    8
-#define LCD_MOSI  11
-#define LCD_SCLK  12
-#define LCD_BL    14
+// ─── Pin Config — sp-esp32-s3-1.54-muma (Spotpear/MUMA compact box) ─────────
+// LCD ST7789 240x240 via SPI3
+#define LCD_CS    5
+#define LCD_DC    47
+#define LCD_RST   38
+#define LCD_MOSI  2
+#define LCD_SCLK  4
+#define LCD_BL    42   // active-LOW (HIGH = off, LOW = on)
 
-// I2S Microphone
-#define I2S_MIC_WS    5
-#define I2S_MIC_SCK   4
-#define I2S_MIC_SD    6
-#define I2S_MIC_PORT  I2S_NUM_0
+// ES8311 Audio Codec — I2C bus for register init
+#define CODEC_I2C_SDA  15
+#define CODEC_I2C_SCL  14
+#define CODEC_ADDR     0x18   // ES8311 default I2C address
+#define CODEC_PA_PIN   46     // Power amplifier enable (HIGH = on)
 
-// I2S Speaker
-#define I2S_SPK_BCLK   15
-#define I2S_SPK_LRCLK  16
-#define I2S_SPK_DOUT   17
-#define I2S_SPK_PORT   I2S_NUM_1
+// ES8311 — shared I2S bus (full-duplex: DIN = mic ADC out, DOUT = spk DAC in)
+#define I2S_MCLK      16
+#define I2S_BCLK       9
+#define I2S_WS        45
+#define I2S_DIN       10   // mic data: codec ADC → ESP32
+#define I2S_DOUT       8   // spk data: ESP32 → codec DAC
+#define I2S_PORT      I2S_NUM_0
 
-// LED Ring
+// Keep old aliases so existing code compiles unchanged
+#define I2S_MIC_WS    I2S_WS
+#define I2S_MIC_SCK   I2S_BCLK
+#define I2S_MIC_SD    I2S_DIN
+#define I2S_MIC_PORT  I2S_PORT
+#define I2S_SPK_BCLK  I2S_BCLK
+#define I2S_SPK_LRCLK I2S_WS
+#define I2S_SPK_DOUT  I2S_DOUT
+#define I2S_SPK_PORT  I2S_PORT
+
+// LED Ring (WS2812B)
 #define LED_PIN    48
 #define LED_COUNT  12
 
-// Buttons
-#define BOOT_BTN   0
+// Button
+#define BOOT_BTN   0   // GPIO0 — physical boot button, active LOW
+
+// CST816 capacitive touch (on-screen, separate I2C from codec — Wire1/I2C_NUM_1)
+#define TOUCH_I2C_SDA  11
+#define TOUCH_I2C_SCL   7
+#define TOUCH_RST       6
+#define TOUCH_INT      12   // HIGH at boot = touch IC present
+#define TOUCH_ADDR   0x15   // CST816 fixed I2C address
 
 // ─── Audio Config ───────────────────────────────────────────────────────────
 #define SAMPLE_RATE      16000

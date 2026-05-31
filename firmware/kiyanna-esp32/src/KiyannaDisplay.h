@@ -7,7 +7,7 @@
 
 // RGB565 colors
 #define COLOR_BG      0x0000  // black
-#define COLOR_TEAL    0x0CB0  // #0D9488 — correct RGB565 for teal accent
+#define COLOR_TEAL    0x0CB0  // #0D9488
 #define COLOR_WHITE   0xFFFF
 #define COLOR_GRAY    0x7BEF
 #define COLOR_DGRAY   0x4A49
@@ -25,6 +25,7 @@ class KiyannaDisplay {
 public:
   KiyannaDisplay();
   void begin();
+
   void showBoot();
   void showConnecting(const char* ssid);
   void showIdle(const char* deviceId);
@@ -34,6 +35,10 @@ public:
   void showLapsed();
   void showError(const char* msg);
   void update();
+
+  // Real-time mic level bar — call every VAD tick while in IDLE state.
+  // peak is raw 16-bit ADC amplitude (0-32767). Bar is green when > threshold.
+  void updateMicLevel(int peak, int threshold = 80);
 
 private:
   Adafruit_ST7789 _tft;

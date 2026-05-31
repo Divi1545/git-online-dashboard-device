@@ -6,51 +6,35 @@ static const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv
 KiyannaAudio::KiyannaAudio() : _recording(false), _bufferFilled(0), _audioBuffer(nullptr) {}
 
 void KiyannaAudio::setupMicI2S() {
+  // ES8311 codec: full-duplex I2S (RX for mic ADC, TX for speaker DAC)
+  // Both share the same BCLK/WS; MCLK = 256 * SAMPLE_RATE from I2S driver
   i2s_config_t cfg = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_RX),
     .sample_rate = SAMPLE_RATE,
     .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count = 8,
-    .dma_buf_len = 1024,
+    .dma_buf_len = 512,
     .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = (int)(SAMPLE_RATE * 256),
+    .mclk_multiple = I2S_MCLK_MULTIPLE_256,
   };
   i2s_pin_config_t pins = {
-    .bck_io_num = I2S_MIC_SCK,
-    .ws_io_num = I2S_MIC_WS,
-    .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num = I2S_MIC_SD
+    .mck_io_num  = I2S_MCLK,  // I2S driver generates exact 4096000Hz on this pin
+    .bck_io_num  = I2S_BCLK,
+    .ws_io_num   = I2S_WS,
+    .data_out_num = I2S_DOUT,
+    .data_in_num  = I2S_DIN,
   };
-  i2s_driver_install(I2S_MIC_PORT, &cfg, 0, NULL);
-  i2s_set_pin(I2S_MIC_PORT, &pins);
+  i2s_driver_install(I2S_PORT, &cfg, 0, NULL);
+  i2s_set_pin(I2S_PORT, &pins);
 }
 
 void KiyannaAudio::setupSpeakerI2S() {
-  i2s_config_t cfg = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-    .sample_rate = 24000,  // matches OpenAI TTS wav output
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 8,
-    .dma_buf_len = 1024,
-    .use_apll = false,
-    .tx_desc_auto_clear = true,
-    .fixed_mclk = 0
-  };
-  i2s_pin_config_t pins = {
-    .bck_io_num = I2S_SPK_BCLK,
-    .ws_io_num = I2S_SPK_LRCLK,
-    .data_out_num = I2S_SPK_DOUT,
-    .data_in_num = I2S_PIN_NO_CHANGE
-  };
-  i2s_driver_install(I2S_SPK_PORT, &cfg, 0, NULL);
-  i2s_set_pin(I2S_SPK_PORT, &pins);
+  // ES8311 is full-duplex on I2S_PORT — already installed in setupMicI2S()
 }
 
 void KiyannaAudio::beginMic() {
@@ -60,7 +44,7 @@ void KiyannaAudio::beginMic() {
   _audioBuffer = (uint8_t*)ps_malloc(bufSize);
   if (!_audioBuffer) {
     Serial.println("[AUDIO] PSRAM alloc failed — falling back to DRAM");
-    _audioBuffer = (uint8_t*)malloc(bufSize);  // same full size in DRAM
+    _audioBuffer = (uint8_t*)malloc(bufSize);
   }
   if (_audioBuffer) {
     Serial.printf("[AUDIO] Buffer: %u bytes @ 0x%08x\n", (unsigned)bufSize, (unsigned)_audioBuffer);
@@ -71,8 +55,14 @@ void KiyannaAudio::beginMic() {
 }
 
 void KiyannaAudio::beginSpeaker() {
-  setupSpeakerI2S();
-  Serial.println("[AUDIO] Speaker I2S ready");
+  // Enable PA after I2S is running and codec DAC is stable.
+  // Enabling PA before audio signal exists causes a loud pop and can
+  // confuse the amplifier into a fault state (no output thereafter).
+  pinMode(CODEC_PA_PIN, OUTPUT);
+  delay(50);
+  digitalWrite(CODEC_PA_PIN, HIGH);
+  i2s_zero_dma_buffer(I2S_PORT);  // flush any DMA noise before first playback
+  Serial.println("[AUDIO] Speaker PA enabled");
 }
 
 String KiyannaAudio::recordToBase64(int maxMs) {
@@ -85,19 +75,18 @@ String KiyannaAudio::recordToBase64(int maxMs) {
 
   unsigned long startTime = millis();
   unsigned long lastSound = millis();
-  static DRAM_ATTR int16_t readBuf[256];  // DRAM_ATTR: DMA cannot access PSRAM
-  size_t bytesRead = 0;
+  static DRAM_ATTR int16_t readBuf[256];  // DRAM_ATTR: I2S DMA cannot access PSRAM
 
   Serial.println("[AUDIO] Recording...");
 
   while (millis() - startTime < (unsigned long)maxMs) {
-    i2s_read(I2S_MIC_PORT, readBuf, sizeof(readBuf), &bytesRead, pdMS_TO_TICKS(100));
+    size_t bytesRead = 0;
+    i2s_read(I2S_PORT, readBuf, sizeof(readBuf), &bytesRead, pdMS_TO_TICKS(100));
 
     if (bytesRead > 0 && totalRead + bytesRead <= maxDataSize) {
       memcpy(dataBuf + totalRead, readBuf, bytesRead);
       totalRead += bytesRead;
 
-      // Silence detection
       if (!isSilent(readBuf, bytesRead / 2)) {
         lastSound = millis();
       } else if (millis() - lastSound > SILENCE_TIMEOUT && totalRead > SAMPLE_RATE) {
@@ -118,21 +107,22 @@ String KiyannaAudio::recordToBase64(int maxMs) {
 }
 
 void KiyannaAudio::playPCM(const uint8_t* data, size_t len) {
+  i2s_zero_dma_buffer(I2S_PORT);  // clear any mic residue from DMA buffers
   size_t written = 0;
   size_t offset = 0;
-  // Skip WAV header if present
   if (len > 44 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F') {
     offset = 44;
   }
   while (offset < len) {
     size_t chunk = min((size_t)4096, len - offset);
-    i2s_write(I2S_SPK_PORT, data + offset, chunk, &written, portMAX_DELAY);
+    esp_err_t err = i2s_write(I2S_PORT, data + offset, chunk, &written, pdMS_TO_TICKS(1000));
+    if (err != ESP_OK || written == 0) break;
     offset += written;
   }
 }
 
 void KiyannaAudio::stopPlayback() {
-  i2s_zero_dma_buffer(I2S_SPK_PORT);
+  i2s_zero_dma_buffer(I2S_PORT);
 }
 
 bool KiyannaAudio::isSilent(int16_t* samples, int count, int threshold) {

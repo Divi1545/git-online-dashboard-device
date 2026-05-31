@@ -18,6 +18,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include <esp_system.h>
 #include "config.h"
 #include "KiyannaLED.h"
@@ -25,6 +26,52 @@
 #include "KiyannaAuth.h"
 #include "KiyannaAudio.h"
 #include "KiyannaCloud.h"
+#include "KiyannaCodec.h"
+
+// ─── CST816 Touch (Wire1 = I2C_NUM_1, SDA=11, SCL=7) ────────────────────────
+static bool touchAvailable = false;
+
+// Returns number of fingers currently on screen (0 = not touched)
+static int cst816_fingers() {
+  // INT is LOW only while a touch event is pending — skip I2C when idle
+  if (digitalRead(TOUCH_INT) == HIGH) return 0;
+  Wire1.beginTransmission(TOUCH_ADDR);
+  Wire1.write(0x02);  // finger-count register
+  Wire1.endTransmission(false);
+  Wire1.requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)1);
+  return Wire1.available() ? (Wire1.read() & 0x0F) : 0;
+}
+
+static void initTouch() {
+  // Hardware reset — hold RST LOW then release
+  // CST816 I2C is not stable until ~300ms after RST goes HIGH
+  pinMode(TOUCH_RST, OUTPUT);
+  digitalWrite(TOUCH_RST, LOW);  delay(10);
+  digitalWrite(TOUCH_RST, HIGH); delay(300);
+  pinMode(TOUCH_INT, INPUT_PULLUP);
+
+  Wire1.begin(TOUCH_I2C_SDA, TOUCH_I2C_SCL, 400000);
+  // Read chip ID from 0xA3. CST816S=0xB4/0xB5, CST816D=0xA7, CST816T=0xBC
+  Wire1.beginTransmission(TOUCH_ADDR);
+  Wire1.write(0xA3);
+  Wire1.endTransmission(false);
+  Wire1.requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)1);
+  uint8_t chipId = Wire1.available() ? Wire1.read() : 0x00;
+  Serial.printf("[TOUCH] CST816 chip ID: 0x%02X\n", chipId);
+  // Accept any non-zero, non-FF response (covers all CST816 variants)
+  touchAvailable = (chipId != 0x00 && chipId != 0xFF);
+  if (touchAvailable) {
+    // Disable auto-sleep (chip enters standby after ~5s idle by default —
+    // in standby, I2C reads return stale data and taps are missed)
+    Wire1.beginTransmission(TOUCH_ADDR);
+    Wire1.write(0xFE);  // Power Mode register
+    Wire1.write(0x01);  // 0x01 = disable auto standby
+    Wire1.endTransmission();
+    Serial.println("[TOUCH] Touch screen ready (auto-sleep disabled)");
+  } else {
+    Serial.println("[TOUCH] CST816 not responding — touch disabled");
+  }
+}
 
 // ─── Global Objects ──────────────────────────────────────────────────────────
 KiyannaLED    led;
@@ -237,16 +284,29 @@ void setup() {
   display.showBoot();
   Serial.println("[INIT] Display OK");
 
-  Serial.println("[INIT] Mic...");
+  // I2S must start first — it generates MCLK that the ES8311 PLL locks to.
+  Serial.println("[INIT] I2S / Mic...");
   audio.beginMic();
-  Serial.println("[INIT] Mic OK");
+  Serial.println("[INIT] I2S OK");
 
-  Serial.println("[INIT] Speaker...");
+  // Codec init after MCLK is running so PLL can lock.
+  Serial.println("[INIT] ES8311 codec...");
+  delay(10);
+  es8311_init(SAMPLE_RATE);
+  Serial.println("[INIT] Codec OK");
+
+  // PA enabled last — after codec DAC is stable — to avoid startup pop.
+  Serial.println("[INIT] Speaker PA...");
   audio.beginSpeaker();
   Serial.println("[INIT] Speaker OK");
 
   // Boot button
   pinMode(BOOT_BTN, INPUT_PULLUP);
+
+  // CST816 capacitive touch (on LCD panel)
+  Serial.println("[INIT] CST816 touch...");
+  initTouch();
+  Serial.println("[INIT] Touch OK");
 
   delay(1500);  // show boot screen
 
@@ -267,16 +327,59 @@ void loop() {
 
   switch (appState) {
     case STATE_IDLE: {
-      // Always-on VAD — trigger conversation when sustained speech detected
+      // ── Button trigger ───────────────────────────────────────────────────
+      if (digitalRead(BOOT_BTN) == LOW) {
+        delay(25);
+        if (digitalRead(BOOT_BTN) == LOW) {
+          while (digitalRead(BOOT_BTN) == LOW) delay(10);
+          Serial.println("[BTN] Button pressed — starting conversation");
+          handleConversation();
+          break;
+        }
+      }
+
+      // ── CST816 touch trigger (short tap < 500ms on screen) ──────────────
+      if (touchAvailable) {
+        static bool wasTouched = false;
+        static unsigned long touchStart = 0;
+        int fingers = cst816_fingers();
+        if (fingers > 0 && !wasTouched) {
+          wasTouched = true;
+          touchStart = millis();
+        } else if (fingers == 0 && wasTouched) {
+          wasTouched = false;
+          if (millis() - touchStart < 500) {
+            Serial.println("[TOUCH] Screen tapped — starting conversation");
+            handleConversation();
+            break;
+          }
+        }
+      }
+
+      // ── Always-on VAD — 16-bit PCM directly from ES8311 codec ──────────
       // DRAM_ATTR required: I2S DMA cannot write to PSRAM
       static DRAM_ATTR int16_t vadBuf[256];
       static int speechChunks = 0;
+      static unsigned long lastLevelLog = 0;
       size_t vadRead = 0;
-      i2s_read(I2S_MIC_PORT, vadBuf, sizeof(vadBuf), &vadRead, pdMS_TO_TICKS(50));
+      i2s_read(I2S_PORT, vadBuf, sizeof(vadBuf), &vadRead, pdMS_TO_TICKS(50));
       if (vadRead > 0) {
-        if (!audio.isSilent(vadBuf, vadRead / 2, 800)) {
+        int samples = vadRead / 2;
+        int32_t peak = 0;
+        for (int i = 0; i < samples; i++) {
+          int32_t v = abs((int32_t)vadBuf[i]);
+          if (v > peak) peak = v;
+        }
+        // Mic level bar on display — green when above trigger threshold
+        display.updateMicLevel(peak);
+
+        if (millis() - lastLevelLog > 3000) {
+          Serial.printf("[VAD] peak=%d\n", (int)peak);
+          lastLevelLog = millis();
+        }
+        if (peak > 80) {
           speechChunks++;
-          if (speechChunks >= 6) {  // ~300ms sustained speech → trigger
+          if (speechChunks >= 2) {
             speechChunks = 0;
             Serial.println("[WAKE] Voice detected!");
             handleConversation();
