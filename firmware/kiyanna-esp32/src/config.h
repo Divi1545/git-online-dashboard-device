@@ -9,7 +9,7 @@
 #define WIFI_PASSWORD   "99999999"
 
 // ─── API Endpoints ──────────────────────────────────────────────────────────
-#define API_BASE_URL    "https://ai-hardware-two.vercel.app"
+#define API_BASE_URL    "https://git-online-dashboard-device.vercel.app"
 #define AUTH_ENDPOINT   "/api/device/auth"
 #define CHAT_ENDPOINT   "/api/device/chat"
 #define HB_ENDPOINT     "/api/device/heartbeat"
