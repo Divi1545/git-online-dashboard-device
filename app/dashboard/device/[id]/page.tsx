@@ -18,22 +18,6 @@ export default async function DeviceDetailPage({
   const isAdmin = user.email === process.env.ADMIN_EMAIL
   const client = isAdmin ? createServiceRoleClient() : supabase
 
-  const { data: device } = await client
-    .from('hardware_devices')
-    .select('*')
-    .eq('id', params.id)
-    .single()
-
-  if (!device) notFound()
-
-  const { data: subscription } = await client
-    .from('hardware_subscriptions')
-    .select('*')
-    .eq('device_id', params.id)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single()
-
   const page = parseInt(searchParams.page || '1', 10)
   const language = searchParams.language || 'all'
   const pageSize = 20
@@ -50,13 +34,20 @@ export default async function DeviceDetailPage({
     convQuery = convQuery.eq('language', language)
   }
 
-  const { data: conversations, count: totalConversations } = await convQuery
+  // Run all queries in parallel
+  const [
+    { data: device },
+    { data: subscription },
+    { data: conversations, count: totalConversations },
+    { data: allConversationsRaw },
+  ] = await Promise.all([
+    client.from('hardware_devices').select('*').eq('id', params.id).single(),
+    client.from('hardware_subscriptions').select('*').eq('device_id', params.id).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    convQuery,
+    client.from('hardware_conversations').select('language, duration_s, created_at').eq('device_id', params.id),
+  ])
 
-  // Analytics data
-  const { data: allConversationsRaw } = await client
-    .from('hardware_conversations')
-    .select('language, duration_s, created_at')
-    .eq('device_id', params.id)
+  if (!device) notFound()
   const allConversations = allConversationsRaw as Array<{ language: string; duration_s: number; created_at: string }> | null
 
   const avgDuration =
