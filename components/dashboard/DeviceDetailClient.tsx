@@ -19,7 +19,7 @@ import { LedIndicator } from '@/components/hardware/LedIndicator'
 import { ConversationTable } from '@/components/hardware/ConversationTable'
 import { UsageCharts } from '@/components/hardware/UsageCharts'
 import { formatDate, formatDateTime, truncateId } from '@/lib/utils'
-import { ArrowLeft, MapPin, Calendar, Cpu, CreditCard, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, MapPin, Calendar, Cpu, CreditCard, AlertTriangle, Code2 } from 'lucide-react'
 import Link from 'next/link'
 import { createBrowserClient } from '@/lib/supabase/client'
 
@@ -134,9 +134,19 @@ export function DeviceDetailClient({
             <p className="text-white/40 text-sm font-mono">{device.device_id}</p>
           </div>
         </div>
-        <Badge className={`text-sm border ${statusConfig[device.status]}`}>
-          {device.status.toUpperCase()}
-        </Badge>
+        <div className="flex items-center gap-3">
+          <Badge className={`text-sm border ${statusConfig[device.status]}`}>
+            {device.status.toUpperCase()}
+          </Badge>
+          {isAdmin && (
+            <Link href={`/dashboard/device/${device.id}/program`}>
+              <Button size="sm" className="bg-teal-600 hover:bg-teal-700 text-white gap-1.5">
+                <Code2 className="w-3.5 h-3.5" />
+                Program Device
+              </Button>
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Device Info + Subscription */}

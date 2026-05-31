@@ -22,6 +22,12 @@ export interface Database {
           firmware: string
           deployed_at: string
           last_seen: string | null
+          personality_name: string
+          system_prompt: string | null
+          ai_model: string
+          default_language: string
+          config_version: number
+          config_updated_at: string | null
         }
         Insert: {
           id?: string
@@ -35,6 +41,12 @@ export interface Database {
           firmware?: string
           deployed_at?: string
           last_seen?: string | null
+          personality_name?: string
+          system_prompt?: string | null
+          ai_model?: string
+          default_language?: string
+          config_version?: number
+          config_updated_at?: string | null
         }
         Update: {
           id?: string
@@ -48,6 +60,12 @@ export interface Database {
           firmware?: string
           deployed_at?: string
           last_seen?: string | null
+          personality_name?: string
+          system_prompt?: string | null
+          ai_model?: string
+          default_language?: string
+          config_version?: number
+          config_updated_at?: string | null
         }
       }
       hardware_subscriptions: {

@@ -16,13 +16,13 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 })
 
-// Build a system prompt tailored to the device's location/plan
-function buildSystemPrompt(device_name: string, plan: string, language?: string): string {
+// Default system prompt used when no custom prompt is configured
+function buildDefaultSystemPrompt(device_name: string, personality_name: string, plan: string, language?: string): string {
   const langNote = language && language !== 'en'
     ? `The user may speak ${language} — reply in the same language they use.`
     : 'Reply in the same language the user speaks.'
 
-  return `You are Kiyanna, an AI assistant by AI Code Agency. You are deployed at ${device_name}.
+  return `You are ${personality_name}, an AI assistant by AI Code Agency. You are deployed at ${device_name}.
 You help guests, customers, and staff with questions, information, and requests.
 Be concise — your responses will be converted to speech, so keep answers under 3 sentences unless more detail is essential.
 Do not use markdown, bullet points, or any formatting — plain conversational text only.
@@ -79,16 +79,27 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // 3. Look up device name from DB (for personalised system prompt)
+  // 3. Look up device config from DB
   const db = getAdminClient()
   const { data: device } = (await db
     .from('hardware_devices')
-    .select('location, product_type')
+    .select('location, product_type, personality_name, system_prompt, ai_model')
     .eq('device_id', devicePayload.device_id)
-    .single()) as SupabaseSingle<Pick<DeviceRow, 'location' | 'product_type'>>
+    .single()) as SupabaseSingle<Pick<DeviceRow, 'location' | 'product_type' | 'personality_name' | 'system_prompt' | 'ai_model'>>
 
   const device_name = device?.location ?? devicePayload.device_id
-  const systemPrompt = buildSystemPrompt(device_name, devicePayload.plan, language)
+  const personality_name = device?.personality_name ?? 'Kiyanna'
+  const ai_model = device?.ai_model ?? 'claude-haiku-4-5'
+
+  // Use custom system prompt if set, otherwise build the default
+  let systemPrompt: string
+  if (device?.system_prompt) {
+    systemPrompt = device.system_prompt
+      .replace(/\{device_name\}/g, device_name)
+      .replace(/\{personality_name\}/g, personality_name)
+  } else {
+    systemPrompt = buildDefaultSystemPrompt(device_name, personality_name, devicePayload.plan, language)
+  }
 
   // 4. Build message history (max last 10 turns to stay within token budget)
   const recentHistory = history.slice(-10)
@@ -97,11 +108,11 @@ export async function POST(req: NextRequest) {
     { role: 'user', content: text.trim() },
   ]
 
-  // 5. Call Claude API (haiku for speed on device)
+  // 5. Call Claude API using device's configured model
   let reply: string
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
+      model: ai_model,
       max_tokens: 300,
       system: systemPrompt,
       messages,
@@ -148,7 +159,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(
     {
       reply,
-      model: 'claude-haiku-4-5',
+      model: ai_model,
       device_id: devicePayload.device_id,
     },
     { status: 200, headers: CORS_HEADERS }
