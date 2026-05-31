@@ -27,7 +27,9 @@ struct coeff_div {
 };
 
 static const coeff_div coeff_table[] = {
-    // 16kHz entries
+    // 16kHz BCLK-mode entries (reference = BCLK = sample_rate * 32)
+    {512000  , 16000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x1f, 0x01, 0x10, 0x10},
+    // 16kHz MCLK-mode entries
     {12288000, 16000, 0x03, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
     {8192000 , 16000, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
     {6144000 , 16000, 0x03, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
@@ -76,13 +78,16 @@ void es8311_init(uint32_t sample_rate) {
     reg_write(0x11, 0x7F);  // reference voltage
     reg_write(0x00, 0x80);  // slave mode (ESP32 drives BCLK/WS)
 
-    // ── Clock source: MCLK pin, no invert ───────────────────────────────────
+    // ── Clock source: MCLK pin ───────────────────────────────────────────────
+    // ES8311 reg 0x01 bit7=0 = use MCLK pin, bit6=0 = not inverted.
+    // MCLK must be running before this init (caller does a dummy i2s_read first).
     reg_write(0x01, 0x3F);
     uint8_t r01 = reg_read(0x01) & 0x7F;  // bit7=0: use MCLK pin
     r01 &= ~0x40;                          // bit6=0: not inverted
     reg_write(0x01, r01);
+    Serial.printf("[CODEC] reg01=0x%02X (MCLK mode)\n", r01);
 
-    // ── Clock dividers for mclk/rate pair ───────────────────────────────────
+    // ── Clock dividers for MCLK = 256 × sample_rate ──────────────────────
     uint32_t mclk = sample_rate * 256;
     int c = find_coeff(mclk, sample_rate);
     if (c < 0) {

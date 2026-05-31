@@ -28,18 +28,26 @@
 #include "KiyannaCloud.h"
 #include "KiyannaCodec.h"
 
-// ─── CST816 Touch (Wire1 = I2C_NUM_1, SDA=11, SCL=7) ────────────────────────
+// ─── CST816 Touch ────────────────────────────────────────────────────────────
 static bool touchAvailable = false;
+static TwoWire* g_touchBus = nullptr;
 
-// Returns number of fingers currently on screen (0 = not touched)
+// Interrupt-based detection: INT pin fires FALLING when chip has touch data.
+// This ensures we only read the I2C bus while the chip is active (awake).
+static volatile bool g_touchFired = false;
+static void IRAM_ATTR touchISR() { g_touchFired = true; }
+
+// Returns number of fingers currently touching screen
 static int cst816_fingers() {
-  // INT is LOW only while a touch event is pending — skip I2C when idle
-  if (digitalRead(TOUCH_INT) == HIGH) return 0;
-  Wire1.beginTransmission(TOUCH_ADDR);
-  Wire1.write(0x02);  // finger-count register
-  Wire1.endTransmission(false);
-  Wire1.requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)1);
-  return Wire1.available() ? (Wire1.read() & 0x0F) : 0;
+  if (!g_touchBus || !g_touchFired) return 0;
+  g_touchFired = false;
+  // Direct requestFrom without register write — CST816 sequential read starts
+  // at register 0x00 (gesture) → 0x01 (finger count)
+  if (g_touchBus->requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)2) >= 2) {
+    g_touchBus->read();  // byte 0: gesture ID
+    return g_touchBus->read() & 0x0F;  // byte 1: finger count
+  }
+  return 0;
 }
 
 static void initTouch() {
@@ -50,26 +58,72 @@ static void initTouch() {
   digitalWrite(TOUCH_RST, HIGH); delay(300);
   pinMode(TOUCH_INT, INPUT_PULLUP);
 
+  // Scan Wire1 (SDA=11, SCL=7) for any I2C device
   Wire1.begin(TOUCH_I2C_SDA, TOUCH_I2C_SCL, 400000);
-  // Read chip ID from 0xA3. CST816S=0xB4/0xB5, CST816D=0xA7, CST816T=0xBC
-  Wire1.beginTransmission(TOUCH_ADDR);
-  Wire1.write(0xA3);
-  Wire1.endTransmission(false);
-  Wire1.requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)1);
-  uint8_t chipId = Wire1.available() ? Wire1.read() : 0x00;
-  Serial.printf("[TOUCH] CST816 chip ID: 0x%02X\n", chipId);
-  // Accept any non-zero, non-FF response (covers all CST816 variants)
-  touchAvailable = (chipId != 0x00 && chipId != 0xFF);
+  Serial.println("[TOUCH] Scanning Wire1 (SDA=11, SCL=7)...");
+  int wire1Count = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire1.beginTransmission(addr);
+    if (Wire1.endTransmission() == 0) {
+      Serial.printf("[TOUCH] Wire1: device at 0x%02X\n", addr);
+      wire1Count++;
+    }
+  }
+  if (wire1Count == 0) Serial.println("[TOUCH] Wire1: nothing found");
+
+  // Also scan Wire (SDA=15, SCL=14 — same bus as ES8311 codec)
+  Serial.println("[TOUCH] Scanning Wire (SDA=15, SCL=14)...");
+  int wireCount = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("[TOUCH] Wire: device at 0x%02X\n", addr);
+      wireCount++;
+    }
+  }
+  if (wireCount == 0) Serial.println("[TOUCH] Wire: nothing found");
+
+  // Helper: read chip ID register 0xA3 from a given I2C bus.
+  // CST816 requires a full STOP between write and read (repeated start = Error -1).
+  struct TouchProbe {
+    static uint8_t read(TwoWire* bus) {
+      bus->beginTransmission(TOUCH_ADDR);
+      bus->write(0xA3);
+      bus->endTransmission(true);  // STOP condition required by CST816
+      delay(2);
+      bus->requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)1);
+      return bus->available() ? bus->read() : 0x00;
+    }
+  };
+
+  // Use scan result to detect which bus has the touch chip (ID register read fails
+  // with Error -1 on CST816 — it rejects repeated-start and timed write+read).
+  // The scan (0-byte write) is all we need to confirm presence.
+  if (wire1Count > 0) {
+    g_touchBus = &Wire1;
+    Serial.println("[TOUCH] CST816 confirmed on Wire1 (SDA=11,SCL=7)");
+  } else if (wireCount > 0 && wire1Count == 0) {
+    // Unlikely but check Wire too (touch and codec at different addresses)
+    Wire.beginTransmission(TOUCH_ADDR);
+    if (Wire.endTransmission() == 0) {
+      g_touchBus = &Wire;
+      Serial.println("[TOUCH] CST816 confirmed on Wire (SDA=15,SCL=14)");
+    }
+  }
+
+  touchAvailable = (g_touchBus != nullptr);
   if (touchAvailable) {
-    // Disable auto-sleep (chip enters standby after ~5s idle by default —
-    // in standby, I2C reads return stale data and taps are missed)
-    Wire1.beginTransmission(TOUCH_ADDR);
-    Wire1.write(0xFE);  // Power Mode register
-    Wire1.write(0x01);  // 0x01 = disable auto standby
-    Wire1.endTransmission();
-    Serial.println("[TOUCH] Touch screen ready (auto-sleep disabled)");
+    // Disable auto-sleep: write-only (no read-back needed)
+    g_touchBus->beginTransmission(TOUCH_ADDR);
+    g_touchBus->write(0xFE);
+    g_touchBus->write(0x01);
+    g_touchBus->endTransmission();
+    // Attach falling-edge interrupt — fires when chip has touch data ready
+    pinMode(TOUCH_INT, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(TOUCH_INT), touchISR, FALLING);
+    Serial.println("[TOUCH] Touch ready — interrupt attached (GPIO12 FALLING)");
   } else {
-    Serial.println("[TOUCH] CST816 not responding — touch disabled");
+    Serial.println("[TOUCH] CST816 not found on either bus");
   }
 }
 
@@ -289,9 +343,17 @@ void setup() {
   audio.beginMic();
   Serial.println("[INIT] I2S OK");
 
+
   // Codec init after MCLK is running so PLL can lock.
+  // Dummy readRaw ensures I2S DMA is started and BCLK/MCLK are stable
+  // before writing codec registers (i2s_driver_install may not start clocks
+  // until the first data transfer on some ESP-IDF versions).
+  {
+    uint8_t dummy[256];
+    audio.readRaw(dummy, sizeof(dummy));
+    delay(20);
+  }
   Serial.println("[INIT] ES8311 codec...");
-  delay(10);
   es8311_init(SAMPLE_RATE);
   Serial.println("[INIT] Codec OK");
 
@@ -356,18 +418,17 @@ void loop() {
         }
       }
 
-      // ── Always-on VAD — 16-bit PCM directly from ES8311 codec ──────────
+      // ── Always-on VAD — stereo from ES8311, L-channel is mic ──────────
       // DRAM_ATTR required: I2S DMA cannot write to PSRAM
-      static DRAM_ATTR int16_t vadBuf[256];
+      static DRAM_ATTR int16_t vadBuf[256];  // 128 stereo frames = 512 bytes
       static int speechChunks = 0;
       static unsigned long lastLevelLog = 0;
-      size_t vadRead = 0;
-      i2s_read(I2S_PORT, vadBuf, sizeof(vadBuf), &vadRead, pdMS_TO_TICKS(50));
+      size_t vadRead = audio.readRaw(vadBuf, sizeof(vadBuf));
       if (vadRead > 0) {
-        int samples = vadRead / 2;
+        int frames = vadRead / 4;  // stereo: 4 bytes per frame
         int32_t peak = 0;
-        for (int i = 0; i < samples; i++) {
-          int32_t v = abs((int32_t)vadBuf[i]);
+        for (int i = 0; i < frames; i++) {
+          int32_t v = abs((int32_t)vadBuf[i * 2]);  // L channel (even index)
           if (v > peak) peak = v;
         }
         // Mic level bar on display — green when above trigger threshold
