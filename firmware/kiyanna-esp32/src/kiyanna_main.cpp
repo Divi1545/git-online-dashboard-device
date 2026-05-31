@@ -183,7 +183,7 @@ void handleConversation() {
     size_t audioBufSize = 256 * 1024;  // 256KB buffer
     uint8_t* audioBuf = (uint8_t*)ps_malloc(audioBufSize);
     if (audioBuf) {
-      size_t audioSize = cloud.downloadAudio(result.audioUrl, audioBuf, audioBufSize);
+      size_t audioSize = cloud.downloadAudio(result.audioUrl, audioBuf, audioBufSize, jwtToken);
       if (audioSize > 0) {
         audio.playPCM(audioBuf, audioSize);
       }

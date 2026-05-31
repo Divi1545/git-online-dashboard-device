@@ -86,9 +86,13 @@ bool KiyannaCloud::logConversation(const String& token, const ConvLog& log) {
   return httpCode == 200;
 }
 
-size_t KiyannaCloud::downloadAudio(const String& url, uint8_t* buffer, size_t maxSize) {
+size_t KiyannaCloud::downloadAudio(const String& url, uint8_t* buffer, size_t maxSize, const String& token) {
   HTTPClient http;
   http.begin(url);
+  if (token.length() > 0) {
+    http.addHeader("Authorization", "Bearer " + token);
+  }
+  http.setTimeout(20000);
   int httpCode = http.GET();
 
   if (httpCode == 200) {

@@ -157,8 +157,12 @@ Plan: ${devicePayload.plan}. Be professional and helpful.`
     console.error('[chat] Conversation log error:', err)
   }
 
+  // Build TTS URL — device downloads and plays this via I2S speaker
+  const baseUrl = `https://${req.headers.get('host')}`
+  const audioUrl = `${baseUrl}/api/device/tts?text=${encodeURIComponent(reply)}`
+
   return NextResponse.json(
-    { text: reply, language: body.language ?? 'en' },
+    { text: reply, audio_url: audioUrl, language: body.language ?? 'en' },
     { status: 200, headers: CORS_HEADERS }
   )
 }

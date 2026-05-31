@@ -30,6 +30,6 @@ public:
   // Log conversation to dashboard
   bool logConversation(const String& token, const ConvLog& log);
 
-  // Download TTS audio to buffer (returns size)
-  size_t downloadAudio(const String& url, uint8_t* buffer, size_t maxSize);
+  // Download TTS audio to buffer — passes JWT so server can validate (returns size)
+  size_t downloadAudio(const String& url, uint8_t* buffer, size_t maxSize, const String& token = "");
 };

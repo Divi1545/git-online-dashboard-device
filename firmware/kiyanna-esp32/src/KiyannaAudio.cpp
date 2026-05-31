@@ -38,7 +38,7 @@ void KiyannaAudio::setupMicI2S() {
 void KiyannaAudio::setupSpeakerI2S() {
   i2s_config_t cfg = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-    .sample_rate = 22050,
+    .sample_rate = 24000,  // matches OpenAI TTS wav output
     .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
