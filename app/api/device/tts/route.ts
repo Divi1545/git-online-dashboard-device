@@ -10,27 +10,11 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 }
 
+// ElevenLabs voice ID — "Rachel" (clear, natural English)
+const ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
+
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS_HEADERS })
-}
-
-// Downsample 16-bit mono PCM from srcRate Hz to dstRate Hz (linear interpolation)
-function resamplePCM(pcm: Buffer, srcRate: number, dstRate: number): Buffer {
-  if (srcRate === dstRate) return pcm
-  const srcSamples = pcm.length / 2
-  const dstSamples = Math.floor(srcSamples * dstRate / srcRate)
-  const out = Buffer.alloc(dstSamples * 2)
-  const ratio = srcRate / dstRate
-  for (let i = 0; i < dstSamples; i++) {
-    const pos = i * ratio
-    const idx = Math.floor(pos)
-    const frac = pos - idx
-    const s0 = pcm.readInt16LE(Math.min(idx, srcSamples - 1) * 2)
-    const s1 = pcm.readInt16LE(Math.min(idx + 1, srcSamples - 1) * 2)
-    const sample = Math.round(s0 + frac * (s1 - s0))
-    out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i * 2)
-  }
-  return out
 }
 
 // Wrap raw 16-bit mono PCM into a WAV file
@@ -41,13 +25,13 @@ function buildWav(pcm: Buffer, sampleRate: number): Buffer {
   header.writeUInt32LE(36 + dataSize, 4)
   header.write('WAVE', 8)
   header.write('fmt ', 12)
-  header.writeUInt32LE(16, 16)           // PCM chunk size
-  header.writeUInt16LE(1, 20)            // PCM format
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)            // PCM
   header.writeUInt16LE(1, 22)            // mono
   header.writeUInt32LE(sampleRate, 24)
-  header.writeUInt32LE(sampleRate * 2, 28) // byte rate
-  header.writeUInt16LE(2, 32)            // block align
-  header.writeUInt16LE(16, 34)           // bits per sample
+  header.writeUInt32LE(sampleRate * 2, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)           // 16-bit
   header.write('data', 36)
   header.writeUInt32LE(dataSize, 40)
   return Buffer.concat([header, pcm])
@@ -69,25 +53,52 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'text param required' }, { status: 400, headers: CORS_HEADERS })
   }
 
+  const elevenKey = process.env.ELEVENLABS_API_KEY
+
+  // ── ElevenLabs TTS (free tier — sign up at elevenlabs.io) ─────────────────
+  if (elevenKey) {
+    // pcm_16000 = raw 16-bit mono PCM at 16kHz — exactly what the ESP32 I2S expects
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=pcm_16000`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': elevenKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text,
+          model_id: 'eleven_turbo_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }),
+      }
+    )
+
+    if (res.ok) {
+      const pcm = Buffer.from(await res.arrayBuffer())
+      const wav = buildWav(pcm, 16000)
+      return new NextResponse(new Uint8Array(wav), {
+        status: 200,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store' },
+      })
+    }
+
+    const err = await res.text()
+    console.error(`[tts] ElevenLabs ${res.status}: ${err.slice(0, 200)}`)
+    // fall through to OpenAI backup
+  }
+
+  // ── OpenAI TTS fallback (if OPENAI_API_KEY set) ───────────────────────────
   const openaiKey = process.env.OPENAI_API_KEY
   if (!openaiKey) {
-    console.error('[tts] OPENAI_API_KEY not set')
+    console.error('[tts] No TTS key — set ELEVENLABS_API_KEY or OPENAI_API_KEY')
     return NextResponse.json({ error: 'TTS not configured' }, { status: 503, headers: CORS_HEADERS })
   }
 
-  // Generate TTS via OpenAI — returns 24kHz WAV
   const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${openaiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'tts-1',
-      voice: 'nova',
-      input: text,
-      response_format: 'wav',
-    }),
+    headers: { Authorization: `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'tts-1', voice: 'nova', input: text, response_format: 'wav' }),
   })
 
   if (!ttsRes.ok) {
@@ -96,21 +107,23 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'TTS generation failed' }, { status: 502, headers: CORS_HEADERS })
   }
 
-  const rawBytes = Buffer.from(await ttsRes.arrayBuffer())
-
-  // OpenAI WAV is 24kHz 16-bit mono — strip the 44-byte header, resample to 16kHz
-  // (ESP32 I2S is configured at 16kHz SAMPLE_RATE in config.h)
-  const pcm24k = rawBytes.subarray(44)  // skip WAV header
-  const pcm16k = resamplePCM(pcm24k, 24000, 16000)
+  // OpenAI returns 24kHz — downsample to 16kHz for ESP32 I2S
+  const raw = Buffer.from(await ttsRes.arrayBuffer())
+  const pcm24k = raw.subarray(44)  // strip WAV header
+  const outSamples = Math.floor((pcm24k.length / 2) * 16000 / 24000)
+  const pcm16k = Buffer.alloc(outSamples * 2)
+  for (let i = 0; i < outSamples; i++) {
+    const pos = i * 24000 / 16000
+    const idx = Math.floor(pos)
+    const frac = pos - idx
+    const s0 = pcm24k.readInt16LE(Math.min(idx, pcm24k.length / 2 - 1) * 2)
+    const s1 = pcm24k.readInt16LE(Math.min(idx + 1, pcm24k.length / 2 - 1) * 2)
+    pcm16k.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(s0 + frac * (s1 - s0)))), i * 2)
+  }
   const wav16k = buildWav(pcm16k, 16000)
 
   return new NextResponse(new Uint8Array(wav16k), {
     status: 200,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'audio/wav',
-      'Content-Length': wav16k.length.toString(),
-      'Cache-Control': 'no-store',
-    },
+    headers: { ...CORS_HEADERS, 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store' },
   })
 }
