@@ -311,6 +311,8 @@ void handleConversation() {
   led.setState(LED_IDLE);
   display.showIdle(DEVICE_ID);
   lastConvEnd = millis();
+  vadSpeechStart = 0;
+  vadCalibrateUntil = millis() + VAD_CALIBRATION_MS;
 }
 
 // ─── Setup ───────────────────────────────────────────────────────────────────

@@ -58,11 +58,11 @@
 #define RECORD_DURATION       3000   // ms max recording
 #define SILENCE_TIMEOUT        450   // stop quickly after the user finishes speaking
 #define RECORD_SPEECH_LEVEL    500   // fallback AC energy required while recording
-#define VAD_MIN_LEVEL         1000   // minimum AC energy for hands-free trigger
-#define VAD_NOISE_MARGIN       300   // trigger this far above learned room noise
-#define VAD_TRIGGER_MS         160   // sustained speech required to trigger
+#define VAD_MIN_LEVEL         4500   // reject normal lobby/background noise
+#define VAD_NOISE_MARGIN      1200   // trigger well above the learned room noise
+#define VAD_TRIGGER_MS         350   // require sustained speech, not a short noise
 #define VAD_CALIBRATION_MS    3000   // learn ambient room level after becoming idle
-#define CONV_COOLDOWN_MS      1400   // avoid hearing the tail of Kiyanna's own reply
+#define CONV_COOLDOWN_MS      4000   // avoid hearing Kiyanna's own reply and room echo
 
 // ─── Timing ─────────────────────────────────────────────────────────────────
 #define HEARTBEAT_INTERVAL  300000  // 5 minutes
