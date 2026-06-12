@@ -30,23 +30,14 @@
 #define CODEC_ADDR     0x18   // ES8311 default I2C address
 #define CODEC_PA_PIN   46     // Power amplifier enable (HIGH = on)
 
-// ES8311 — shared I2S bus (full-duplex: DIN = mic ADC out, DOUT = spk DAC in)
+// ES8311 — shared full-duplex I2S bus:
+// GPIO10 carries the codec ADC/microphone data back to the ESP32.
+// MCLK must run before es8311_init() writes codec registers.
 #define I2S_MCLK      16
 #define I2S_BCLK       9
 #define I2S_WS        45
-#define I2S_DIN       10   // mic data: codec ADC → ESP32
-#define I2S_DOUT       8   // spk data: ESP32 → codec DAC
-#define I2S_PORT      I2S_NUM_0
-
-// Keep old aliases so existing code compiles unchanged
-#define I2S_MIC_WS    I2S_WS
-#define I2S_MIC_SCK   I2S_BCLK
-#define I2S_MIC_SD    I2S_DIN
-#define I2S_MIC_PORT  I2S_PORT
-#define I2S_SPK_BCLK  I2S_BCLK
-#define I2S_SPK_LRCLK I2S_WS
-#define I2S_SPK_DOUT  I2S_DOUT
-#define I2S_SPK_PORT  I2S_PORT
+#define I2S_DIN       10   // ES8311 ADC → ESP32 RX
+#define I2S_DOUT       8   // ESP32 TX → ES8311 DIN → DAC → speaker
 
 // LED Ring (WS2812B)
 #define LED_PIN    48
@@ -64,8 +55,14 @@
 
 // ─── Audio Config ───────────────────────────────────────────────────────────
 #define SAMPLE_RATE      16000
-#define RECORD_DURATION  5000   // ms max recording
-#define SILENCE_TIMEOUT  1500   // ms of silence to stop recording
+#define RECORD_DURATION       3000   // ms max recording
+#define SILENCE_TIMEOUT        450   // stop quickly after the user finishes speaking
+#define RECORD_SPEECH_LEVEL    500   // fallback AC energy required while recording
+#define VAD_MIN_LEVEL         1000   // minimum AC energy for hands-free trigger
+#define VAD_NOISE_MARGIN       300   // trigger this far above learned room noise
+#define VAD_TRIGGER_MS         160   // sustained speech required to trigger
+#define VAD_CALIBRATION_MS    3000   // learn ambient room level after becoming idle
+#define CONV_COOLDOWN_MS      1400   // avoid hearing the tail of Kiyanna's own reply
 
 // ─── Timing ─────────────────────────────────────────────────────────────────
 #define HEARTBEAT_INTERVAL  300000  // 5 minutes
@@ -73,7 +70,8 @@
 #define TOKEN_REFRESH_BUFFER  3600  // refresh 1h before expiry
 
 // ─── Wake Word ──────────────────────────────────────────────────────────────
-#define USE_BUTTON_WAKE   true   // v1: button press to start listening
+#define USE_BUTTON_WAKE   true   // button/touch remain available as fallback
+#define USE_ALWAYS_LISTEN true   // adaptive VAD starts conversations hands-free
 #define WAKE_WORD         "Hey Kiyanna"
 
 // ─── Debug ──────────────────────────────────────────────────────────────────

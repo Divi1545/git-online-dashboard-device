@@ -29,102 +29,42 @@
 #include "KiyannaCodec.h"
 
 // ─── CST816 Touch ────────────────────────────────────────────────────────────
-static bool touchAvailable = false;
-static TwoWire* g_touchBus = nullptr;
-
-// Interrupt-based detection: INT pin fires FALLING when chip has touch data.
-// This ensures we only read the I2C bus while the chip is active (awake).
+// g_touchFired: set by ISR on FALLING edge of TOUCH_INT (GPIO12).
+// The CST816 pulls INT LOW on every touch-down event.
+// Cleared in loop immediately after handling so each tap fires once.
 static volatile bool g_touchFired = false;
 static void IRAM_ATTR touchISR() { g_touchFired = true; }
 
-// Returns number of fingers currently touching screen
-static int cst816_fingers() {
-  if (!g_touchBus || !g_touchFired) return 0;
-  g_touchFired = false;
-  // Direct requestFrom without register write — CST816 sequential read starts
-  // at register 0x00 (gesture) → 0x01 (finger count)
-  if (g_touchBus->requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)2) >= 2) {
-    g_touchBus->read();  // byte 0: gesture ID
-    return g_touchBus->read() & 0x0F;  // byte 1: finger count
-  }
-  return 0;
-}
-
 static void initTouch() {
-  // Hardware reset — hold RST LOW then release
-  // CST816 I2C is not stable until ~300ms after RST goes HIGH
+  // Hardware reset CST816
   pinMode(TOUCH_RST, OUTPUT);
   digitalWrite(TOUCH_RST, LOW);  delay(10);
-  digitalWrite(TOUCH_RST, HIGH); delay(300);
-  pinMode(TOUCH_INT, INPUT_PULLUP);
+  digitalWrite(TOUCH_RST, HIGH); delay(300);  // chip needs 300ms after reset
 
-  // Scan Wire1 (SDA=11, SCL=7) for any I2C device
+  // Try to find the chip on Wire1 (SDA=11, SCL=7) via a 0-byte I2C probe.
+  // This is optional — the INT pin fires on touch regardless of I2C success.
   Wire1.begin(TOUCH_I2C_SDA, TOUCH_I2C_SCL, 400000);
-  Serial.println("[TOUCH] Scanning Wire1 (SDA=11, SCL=7)...");
-  int wire1Count = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire1.beginTransmission(addr);
-    if (Wire1.endTransmission() == 0) {
-      Serial.printf("[TOUCH] Wire1: device at 0x%02X\n", addr);
-      wire1Count++;
-    }
-  }
-  if (wire1Count == 0) Serial.println("[TOUCH] Wire1: nothing found");
+  Wire1.beginTransmission(TOUCH_ADDR);
+  bool found = (Wire1.endTransmission() == 0);
 
-  // Also scan Wire (SDA=15, SCL=14 — same bus as ES8311 codec)
-  Serial.println("[TOUCH] Scanning Wire (SDA=15, SCL=14)...");
-  int wireCount = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) {
-      Serial.printf("[TOUCH] Wire: device at 0x%02X\n", addr);
-      wireCount++;
-    }
-  }
-  if (wireCount == 0) Serial.println("[TOUCH] Wire: nothing found");
-
-  // Helper: read chip ID register 0xA3 from a given I2C bus.
-  // CST816 requires a full STOP between write and read (repeated start = Error -1).
-  struct TouchProbe {
-    static uint8_t read(TwoWire* bus) {
-      bus->beginTransmission(TOUCH_ADDR);
-      bus->write(0xA3);
-      bus->endTransmission(true);  // STOP condition required by CST816
-      delay(2);
-      bus->requestFrom((uint8_t)TOUCH_ADDR, (uint8_t)1);
-      return bus->available() ? bus->read() : 0x00;
-    }
-  };
-
-  // Use scan result to detect which bus has the touch chip (ID register read fails
-  // with Error -1 on CST816 — it rejects repeated-start and timed write+read).
-  // The scan (0-byte write) is all we need to confirm presence.
-  if (wire1Count > 0) {
-    g_touchBus = &Wire1;
-    Serial.println("[TOUCH] CST816 confirmed on Wire1 (SDA=11,SCL=7)");
-  } else if (wireCount > 0 && wire1Count == 0) {
-    // Unlikely but check Wire too (touch and codec at different addresses)
-    Wire.beginTransmission(TOUCH_ADDR);
-    if (Wire.endTransmission() == 0) {
-      g_touchBus = &Wire;
-      Serial.println("[TOUCH] CST816 confirmed on Wire (SDA=15,SCL=14)");
-    }
-  }
-
-  touchAvailable = (g_touchBus != nullptr);
-  if (touchAvailable) {
-    // Disable auto-sleep: write-only (no read-back needed)
-    g_touchBus->beginTransmission(TOUCH_ADDR);
-    g_touchBus->write(0xFE);
-    g_touchBus->write(0x01);
-    g_touchBus->endTransmission();
-    // Attach falling-edge interrupt — fires when chip has touch data ready
-    pinMode(TOUCH_INT, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(TOUCH_INT), touchISR, FALLING);
-    Serial.println("[TOUCH] Touch ready — interrupt attached (GPIO12 FALLING)");
+  if (found) {
+    // Disable auto-sleep so the chip stays awake between taps
+    Wire1.beginTransmission(TOUCH_ADDR);
+    Wire1.write(0xFE);  // motion register
+    Wire1.write(0x01);  // continuous active mode
+    Wire1.endTransmission();
+    Serial.println("[TOUCH] CST816 found on Wire1 — auto-sleep disabled");
   } else {
-    Serial.println("[TOUCH] CST816 not found on either bus");
+    Serial.println("[TOUCH] CST816 not found via I2C — using INT-only mode");
+    // INT-only mode still works: the chip pulses TOUCH_INT LOW on every tap
+    // even without I2C config. We just won't be able to disable sleep.
   }
+
+  // Always attach interrupt — TOUCH_INT fires on touch regardless of I2C
+  pinMode(TOUCH_INT, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(TOUCH_INT), touchISR, FALLING);
+  Serial.printf("[TOUCH] Ready — INT on GPIO%d FALLING (I2C %s)\n",
+      TOUCH_INT, found ? "OK" : "not found");
 }
 
 // ─── Global Objects ──────────────────────────────────────────────────────────
@@ -149,10 +89,36 @@ enum AppState {
 
 AppState appState = STATE_BOOT;
 String jwtToken = "";
+String pendingConfirmation = "";
 bool isLapsed = false;
 unsigned long lastHeartbeat = 0;
 unsigned long lastAuthTime = 0;
 int sessionCount = 0;
+unsigned long lastConvEnd = 0;  // cooldown: ignore touch/VAD for CONV_COOLDOWN_MS after each conversation
+float vadNoiseFloor = 700.0f;
+unsigned long vadSpeechStart = 0;
+unsigned long vadCalibrateUntil = 0;
+
+static int measureAcLevel(const int16_t* stereo, int frames) {
+  if (!stereo || frames <= 1) return 0;
+
+  int64_t leftMean = 0;
+  int64_t rightMean = 0;
+  for (int i = 0; i < frames; i++) {
+    leftMean += stereo[i * 2];
+    rightMean += stereo[i * 2 + 1];
+  }
+  leftMean /= frames;
+  rightMean /= frames;
+
+  int64_t leftEnergy = 0;
+  int64_t rightEnergy = 0;
+  for (int i = 0; i < frames; i++) {
+    leftEnergy += abs((int32_t)stereo[i * 2] - (int32_t)leftMean);
+    rightEnergy += abs((int32_t)stereo[i * 2 + 1] - (int32_t)rightMean);
+  }
+  return (int)(max(leftEnergy, rightEnergy) / frames);
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 void connectWiFi() {
@@ -178,6 +144,8 @@ void connectWiFi() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("\n[WIFI] Failed to connect!");
+    display.showError("WiFi failed\nSSID: " WIFI_SSID "\nCheck password");
+    led.setState(LED_ERROR);
     appState = STATE_ERROR;
   }
 }
@@ -196,6 +164,7 @@ void doAuth() {
     led.setState(LED_CONNECTED);
     display.showIdle(DEVICE_ID);
     appState = STATE_IDLE;
+    vadCalibrateUntil = millis() + VAD_CALIBRATION_MS;
   } else if (result.lapsed) {
     Serial.println("[AUTH] Subscription lapsed!");
     led.setState(LED_LAPSED);
@@ -220,15 +189,21 @@ void handleConversation() {
   led.setState(LED_LISTENING);
   display.showListening();
 
-  Serial.println("[CONV] Recording audio...");
+  Serial.println("[CONV] Recording...");
   unsigned long recStart = millis();
-  String audioBase64 = audio.recordToBase64(RECORD_DURATION);
+  int recordSpeechLevel = max(RECORD_SPEECH_LEVEL, (int)vadNoiseFloor + 150);
+  String audioBase64 = audio.recordToBase64(RECORD_DURATION, recordSpeechLevel);
 
+  // Mic heard nothing — tell user and return
   if (audioBase64.isEmpty()) {
-    Serial.println("[CONV] No audio captured");
+    Serial.println("[CONV] Silence — skipping API call");
+    display.showError("Didn't hear you\nSpeak clearly and\ntap again");
+    led.setState(LED_ERROR);
+    delay(2500);
     appState = STATE_IDLE;
     led.setState(LED_IDLE);
     display.showIdle(DEVICE_ID);
+    lastConvEnd = millis();
     return;
   }
 
@@ -237,82 +212,105 @@ void handleConversation() {
   display.showProcessing();
 
   Serial.println("[CONV] Sending to Claude...");
-  ChatResult result = cloud.chat(jwtToken, audioBase64);
+  ChatResult result = cloud.chat(jwtToken, audioBase64, "auto", pendingConfirmation);
 
+  // ── Subscription lapsed ──────────────────────────────────────────────────
   if (result.lapsed) {
-    // Subscription lapsed during conversation
     led.setState(LED_LAPSED);
     display.showLapsed();
     appState = STATE_LAPSED;
     return;
   }
 
-  if (!result.success) {
-    if (result.error.indexOf("Token expired") >= 0) {
-      // Re-auth and retry once
-      Serial.println("[CONV] Token expired, re-authing...");
-      doAuth();
-      if (appState == STATE_IDLE) {
-        result = cloud.chat(jwtToken, audioBase64);
-      }
-    }
-    if (!result.success) {
-      Serial.print("[CONV] Error: ");
-      Serial.println(result.error);
-      display.showError(result.error.c_str());
-      led.setState(LED_ERROR);
-      delay(3000);
-      appState = STATE_IDLE;
-      led.setState(LED_IDLE);
-      display.showIdle(DEVICE_ID);
-      return;
+  // ── Legacy 422: server couldn't transcribe ───────────────────────────────
+  if (result.noSpeech) {
+    Serial.println("[CONV] Server: no speech transcribed (422)");
+    display.showError("Didn't hear you\nSpeak clearly and\ntap again");
+    led.setState(LED_ERROR);
+    delay(2500);
+    appState = STATE_IDLE;
+    led.setState(LED_IDLE);
+    display.showIdle(DEVICE_ID);
+    lastConvEnd = millis();
+    return;
+  }
+
+  // ── Auth token expired — retry once ─────────────────────────────────────
+  if (!result.success && result.error.indexOf("Token expired") >= 0) {
+    Serial.println("[CONV] Token expired — re-authing...");
+    doAuth();
+    if (appState == STATE_IDLE) {
+      result = cloud.chat(jwtToken, audioBase64, "auto", pendingConfirmation);
     }
   }
 
-  // Got response — speak it
+  // ── Other hard error ─────────────────────────────────────────────────────
+  if (!result.success) {
+    Serial.printf("[CONV] Error: %s\n", result.error.c_str());
+    display.showError(result.error.c_str());
+    led.setState(LED_ERROR);
+    delay(3000);
+    appState = STATE_IDLE;
+    led.setState(LED_IDLE);
+    display.showIdle(DEVICE_ID);
+    return;
+  }
+
+  // The token is an opaque, short-lived confirmation handle. It lets the next
+  // voice turn say confirm/cancel without storing Island Loaf credentials here.
+  pendingConfirmation = result.pendingConfirmation;
+
+  // ── Got a text response — show it and speak it ───────────────────────────
   appState = STATE_SPEAKING;
   led.setState(LED_SPEAKING);
   display.showSpeaking(result.text.c_str());
+  Serial.printf("[CONV] Reply: %.80s\n", result.text.c_str());
 
-  Serial.print("[CONV] Response: ");
-  Serial.println(result.text.substring(0, 80) + "...");
-
-  // Play audio response if URL provided
-  if (!result.audioUrl.isEmpty()) {
-    Serial.println("[CONV] Streaming TTS audio...");
-    // Download and play via I2S
-    size_t audioBufSize = 256 * 1024;  // 256KB buffer
-    uint8_t* audioBuf = (uint8_t*)ps_malloc(audioBufSize);
-    if (audioBuf) {
-      size_t audioSize = cloud.downloadAudio(result.audioUrl, audioBuf, audioBufSize, jwtToken);
-      if (audioSize > 0) {
-        audio.playPCM(audioBuf, audioSize);
-      }
-      free(audioBuf);
-    }
-  } else {
-    // No audio URL — display text only, beep or wait
-    Serial.println("[CONV] No audio URL — text only response");
-    delay(3000 + result.text.length() * 50);  // rough reading time
+  // Determine TTS URL:
+  //   - Server normally returns audio_url for Claude responses
+  //   - For text-only responses ("I didn't catch that"), build the URL ourselves
+  String ttsUrl = result.audioUrl;
+  if (ttsUrl.isEmpty() && !result.text.isEmpty()) {
+    ttsUrl = cloud.ttsUrlForText(result.text);
+    Serial.println("[CONV] No audio_url from server — building TTS URL");
   }
 
-  // Log the conversation
-  int duration = (millis() - recStart) / 1000;
-  sessionCount++;
-  String sessionId = String(DEVICE_ID) + "-" + String(millis());
-  ConvLog log = {
-    sessionId,
-    result.language.isEmpty() ? "en" : result.language,
-    duration,
-    1  // 1 exchange per session in v1
-  };
-  cloud.logConversation(jwtToken, log);
+  if (!ttsUrl.isEmpty()) {
+    Serial.println("[CONV] Downloading TTS audio...");
+    // 16 kHz mono PCM uses 32 KB/s. Allow roughly 24 seconds so normal
+    // responses are not cut off by the old 8-second/256 KB limit.
+    size_t audioBufSize = 768 * 1024;
+    uint8_t* audioBuf = (uint8_t*)ps_malloc(audioBufSize);
+    if (!audioBuf) audioBuf = (uint8_t*)malloc(audioBufSize);
 
-  // Return to idle
-  delay(500);
+    if (audioBuf) {
+      size_t audioSize = cloud.downloadAudio(ttsUrl, audioBuf, audioBufSize, jwtToken);
+      if (audioSize > 0) {
+        Serial.printf("[CONV] Playing %u bytes via ES8311 DAC\n", (unsigned)audioSize);
+        audio.playPCM(audioBuf, audioSize);
+        Serial.println("[CONV] Playback done");
+      } else {
+        Serial.println("[CONV] TTS download empty — playing test tone to confirm speaker hardware");
+        // Two-tone chime confirms the speaker is physically working even without TTS
+        audio.playTone(880, 200, 1000);  // A5 — quiet chime
+        delay(80);
+        audio.playTone(660, 300, 1000);  // E5
+      }
+      free(audioBuf);
+    } else {
+      Serial.println("[CONV] PSRAM alloc failed for audio buffer");
+      delay(3000);
+    }
+  }
+
+  // Return to listening immediately after playback. Conversation logging is
+  // intentionally omitted here because its extra HTTP request delays follow-up.
+  sessionCount++;
+  delay(100);
   appState = STATE_IDLE;
   led.setState(LED_IDLE);
   display.showIdle(DEVICE_ID);
+  lastConvEnd = millis();
 }
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
@@ -338,29 +336,42 @@ void setup() {
   display.showBoot();
   Serial.println("[INIT] Display OK");
 
-  // I2S must start first — it generates MCLK that the ES8311 PLL locks to.
-  Serial.println("[INIT] I2S / Mic...");
+  // I2S full-duplex: both TX (speaker) and RX (mic) on I2S_NUM_0.
+  // beginMic() enables both channels so MCLK starts immediately on GPIO16.
+  Serial.println("[INIT] I2S...");
   audio.beginMic();
   Serial.println("[INIT] I2S OK");
 
+  // Give ES8311 PLL 50ms to lock onto MCLK before writing registers.
+  delay(50);
 
-  // Codec init after MCLK is running so PLL can lock.
-  // Dummy readRaw ensures I2S DMA is started and BCLK/MCLK are stable
-  // before writing codec registers (i2s_driver_install may not start clocks
-  // until the first data transfer on some ESP-IDF versions).
-  {
-    uint8_t dummy[256];
-    audio.readRaw(dummy, sizeof(dummy));
-    delay(20);
-  }
   Serial.println("[INIT] ES8311 codec...");
-  es8311_init(SAMPLE_RATE);
+  bool codecOk = es8311_init(SAMPLE_RATE);
+  if (!codecOk) {
+    Serial.println("[INIT] CODEC FAILED — ES8311 not found on I2C!");
+    char codecErr[64];
+    snprintf(codecErr, sizeof(codecErr), "ES8311 not found!\nSDA=%d SCL=%d\nCheck I2C wiring",
+             CODEC_I2C_SDA, CODEC_I2C_SCL);
+    display.showError(codecErr);
+    led.setState(LED_ERROR);
+    // Halt — no mic or speaker without codec
+    while (true) { led.update(); delay(100); }
+  }
   Serial.println("[INIT] Codec OK");
 
-  // PA enabled last — after codec DAC is stable — to avoid startup pop.
+  // Small delay to let the ES8311 ADC/DAC stabilize after codec config.
+  delay(200);
+
+  // PA enabled after codec DAC is stable — avoids startup pop.
   Serial.println("[INIT] Speaker PA...");
   audio.beginSpeaker();
   Serial.println("[INIT] Speaker OK");
+
+  // Boot tone — short beep confirms codec DAC + speaker are wired correctly.
+  // You must hear this on every boot. If silent, check CODEC_PA_PIN or speaker.
+  audio.playTone(880, 120, 1500);   // A5 — short beep
+  delay(60);
+  audio.playTone(1175, 120, 1500);  // D6 — rising confirmation
 
   // Boot button
   pinMode(BOOT_BTN, INPUT_PULLUP);
@@ -396,57 +407,67 @@ void loop() {
           while (digitalRead(BOOT_BTN) == LOW) delay(10);
           Serial.println("[BTN] Button pressed — starting conversation");
           handleConversation();
+          g_touchFired = false;  // discard any ISR that fired during the conversation
+          lastConvEnd = millis();
           break;
         }
       }
 
-      // ── CST816 touch trigger (short tap < 500ms on screen) ──────────────
-      if (touchAvailable) {
-        static bool wasTouched = false;
-        static unsigned long touchStart = 0;
-        int fingers = cst816_fingers();
-        if (fingers > 0 && !wasTouched) {
-          wasTouched = true;
-          touchStart = millis();
-        } else if (fingers == 0 && wasTouched) {
-          wasTouched = false;
-          if (millis() - touchStart < 500) {
-            Serial.println("[TOUCH] Screen tapped — starting conversation");
-            handleConversation();
-            break;
-          }
+      // ── CST816 touch trigger ─────────────────────────────────────────────
+      // g_touchFired is set by the ISR on FALLING edge (touch-down).
+      // CST816 only fires INT on touch-down, not release — so we fire
+      // immediately, same as the button. No state machine needed.
+      if (g_touchFired) {
+        g_touchFired = false;
+        if (millis() - lastConvEnd >= CONV_COOLDOWN_MS) {
+          Serial.println("[TOUCH] Tapped — starting conversation");
+          handleConversation();
+          g_touchFired = false;  // discard any ISR that fired during the conversation
+          lastConvEnd = millis();
+          break;
         }
       }
 
-      // ── Always-on VAD — stereo from ES8311, L-channel is mic ──────────
-      // DRAM_ATTR required: I2S DMA cannot write to PSRAM
-      static DRAM_ATTR int16_t vadBuf[256];  // 128 stereo frames = 512 bytes
-      static int speechChunks = 0;
-      static unsigned long lastLevelLog = 0;
-      size_t vadRead = audio.readRaw(vadBuf, sizeof(vadBuf));
-      if (vadRead > 0) {
-        int frames = vadRead / 4;  // stereo: 4 bytes per frame
-        int32_t peak = 0;
-        for (int i = 0; i < frames; i++) {
-          int32_t v = abs((int32_t)vadBuf[i * 2]);  // L channel (even index)
-          if (v > peak) peak = v;
-        }
-        // Mic level bar on display — green when above trigger threshold
-        display.updateMicLevel(peak);
+      // ── Always-listening adaptive voice activity detection ───────────────
+      // Learn the room's noise floor and trigger only on sustained speech.
+      {
+        static DRAM_ATTR int16_t vadBuf[256];
+        static unsigned long lastLevelLog = 0;
+        size_t vadRead = audio.readRaw(vadBuf, sizeof(vadBuf));
+        if (vadRead > 0) {
+          int frames = vadRead / 4;
+          int level = measureAcLevel(vadBuf, frames);
+          int threshold = max(VAD_MIN_LEVEL, (int)vadNoiseFloor + VAD_NOISE_MARGIN);
+          display.updateMicLevel(min(32767, level * 12), threshold * 12);
 
-        if (millis() - lastLevelLog > 3000) {
-          Serial.printf("[VAD] peak=%d\n", (int)peak);
-          lastLevelLog = millis();
-        }
-        if (peak > 80) {
-          speechChunks++;
-          if (speechChunks >= 2) {
-            speechChunks = 0;
-            Serial.println("[WAKE] Voice detected!");
-            handleConversation();
+          bool cooldownDone = millis() - lastConvEnd >= CONV_COOLDOWN_MS;
+          bool calibrated = millis() >= vadCalibrateUntil;
+          if (!calibrated) {
+            vadSpeechStart = 0;
+            vadNoiseFloor = vadNoiseFloor * 0.90f + level * 0.10f;
+          } else if (USE_ALWAYS_LISTEN && cooldownDone && level > threshold) {
+            if (vadSpeechStart == 0) vadSpeechStart = millis();
+            if (millis() - vadSpeechStart >= VAD_TRIGGER_MS) {
+              Serial.printf("[VAD] Speech detected level=%d threshold=%d — starting conversation\n",
+                            level, threshold);
+              vadSpeechStart = 0;
+              handleConversation();
+              g_touchFired = false;
+              lastConvEnd = millis();
+              break;
+            }
+          } else {
+            vadSpeechStart = 0;
+            if (calibrated && cooldownDone && level < threshold) {
+              vadNoiseFloor = vadNoiseFloor * 0.98f + level * 0.02f;
+            }
           }
-        } else {
-          if (speechChunks > 0) speechChunks--;
+
+          if (millis() - lastLevelLog > 5000) {
+            Serial.printf("[MIC] level=%d noise=%d trigger=%d (always listening)\n",
+                          level, (int)vadNoiseFloor, threshold);
+            lastLevelLog = millis();
+          }
         }
       }
 
